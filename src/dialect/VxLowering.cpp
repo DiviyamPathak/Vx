@@ -2746,6 +2746,82 @@ struct ConvertVxToLLVMPass
   }
 };
 
+// Make a stack buffer behave like the heap buffer it replaced:
+// `malloc`-compatible alignment, and in the entry block.
+//
+// `malloc` hands back memory aligned for any type -- 16 bytes on x86-64 -- and
+// code that read a heap tensor relied on it. A bare `memref.alloca` is only
+// aligned for its element, 4 bytes for an f32, so a `vector.load` of
+// `vector<4xf32>` over a promoted buffer reads across a boundary it assumed was
+// safe: a rank-1 `sum` over a tensor row aborted this way. Declaring 16 keeps
+// every access that was correct against the heap correct against the stack.
+//
+// `promote-buffers-to-stack` turns a heap buffer that does not escape into a
+// stack one, but it rewrites the allocation where it stands. An allocation
+// inside a loop therefore becomes an `alloca` inside a loop -- and LLVM only
+// gives a constant-size `alloca` a fixed frame slot when it sits in the entry
+// block. Anywhere else it is a dynamic stack adjustment, and nothing gives the
+// stack pointer back until the function returns, so a loop running a few
+// million times exhausts the stack and the program dies having compiled
+// cleanly. InstCombine hoists these at -O1 and above, but `--run` compiles at
+// -O0, where nothing does.
+//
+// Hoisting is always valid for an allocation that takes no operands: it depends
+// on nothing, so the entry block dominates every use, and a buffer that was
+// just allocated holds nothing an iteration could carry forward. One that takes
+// a run-time extent is left where it is, because its size operand may not
+// dominate the entry block.
+//
+// This runs late, after device regions have been outlined into `gpu.module`, so
+// a kernel's own scratch is never lifted out into the host frame.
+struct NormalizeStackBuffersPass
+    : public PassWrapper<NormalizeStackBuffersPass,
+                         OperationPass<func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(NormalizeStackBuffersPass)
+
+  // The alignment `malloc` guarantees on the targets Vx emits for. A promoted
+  // buffer declares it so that an access which was correct against the heap
+  // stays correct against the stack.
+  static constexpr uint64_t kMallocAlignment = 16;
+
+  llvm::StringRef getArgument() const override {
+    return "vx-normalize-stack-buffers";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Gives every fixed-size memref.alloca malloc-compatible alignment "
+           "and moves it to "
+           "its function's entry block";
+  }
+
+  void runOnOperation() override {
+    func::FuncOp func = getOperation();
+    if (func.isExternal() || func.getBody().empty())
+      return;
+    // A `func.func` inside a device module keeps its own allocations.
+    if (func->getParentOfType<gpu::GPUModuleOp>())
+      return;
+
+    Block &entry = func.getBody().front();
+    llvm::SmallVector<memref::AllocaOp, 8> toHoist;
+    func.walk([&](memref::AllocaOp alloca) {
+      // Alignment applies to every stack buffer, wherever it sits. Never lower
+      // one that already asks for more -- a shared-memory tile declares its own
+      // and means it.
+      if (alloca.getAlignment().value_or(0) < kMallocAlignment)
+        alloca.setAlignment(kMallocAlignment);
+      if (alloca->getBlock() == &entry)
+        return;
+      if (!alloca->getOperands().empty())
+        return; // a run-time extent: its operand may not reach the entry block
+      toHoist.push_back(alloca);
+    });
+
+    for (memref::AllocaOp alloca : toHoist)
+      alloca->moveBefore(&entry, entry.begin());
+  }
+};
+
 } // namespace
 
 extern "C" {
@@ -2770,6 +2846,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ConvertVxToLLVMPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<NormalizeStackBuffersPass>();
   });
 }
 } // namespace vx

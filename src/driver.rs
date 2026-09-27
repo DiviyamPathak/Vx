@@ -1758,6 +1758,9 @@ fn get_optimization_pipeline(
         // `malloc`. Keep in sync with the pipeline in src/codegen/mod.rs.
         passes
             .push("func.func(promote-buffers-to-stack{max-alloc-size-in-bytes=4096})".to_string());
+        // Everything left on the heap gets a `free` after its last use (#642), in a program that
+        // places nothing; see the pass for why placement programs are left alone for now.
+        passes.push("vx-free-heap-buffers".to_string());
         passes.push("func.func(vx-normalize-stack-buffers)".to_string());
         // Must precede finalize-memref-to-llvm: an unused `extern` lands as
         // `func.func private @malloc`, which memref finalization cannot reuse
@@ -1773,6 +1776,8 @@ fn get_optimization_pipeline(
         passes.push("convert-math-to-libm".to_string());
         passes.push("convert-cf-to-llvm".to_string());
         passes.push("convert-arith-to-llvm".to_string());
+        // `lift-cf-to-scf` leaves `ub.poison` placeholders behind; nothing else lowers them.
+        passes.push("convert-ub-to-llvm".to_string());
         passes.push("reconcile-unrealized-casts".to_string());
     }
 

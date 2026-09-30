@@ -81,14 +81,20 @@ jobs:
           echo "Configured Cargo:"
           cargo --version
 
-      - name: Build release compiler
+      - name: Build release compiler with debug symbols
         shell: bash
         run: |
           set -euo pipefail
           source config.local
+
+          # Keep debug information while retaining release optimizations.
+          # This produces a binary suitable for development/debugging with gdb/lldb.
+          export CARGO_PROFILE_RELEASE_DEBUG=2
+          export CARGO_PROFILE_RELEASE_STRIP=false
+
           cargo build --release --workspace --verbose
 
-      - name: Verify binary
+      - name: Verify binary and debug symbols
         shell: bash
         run: |
           set -euo pipefail
@@ -100,29 +106,33 @@ jobs:
           ldd target/release/vxc || true
 
           echo
+          echo "Debug sections:"
+          readelf -S target/release/vxc | grep -E 'debug_(info|abbrev|line|str)' || true
+
+          echo
           echo "Compiler version/help:"
           ./target/release/vxc --help >/dev/null
 
-      - name: Prepare artifact
+      - name: Prepare development artifact
         shell: bash
         run: |
           set -euo pipefail
 
           mkdir -p dist
-          cp target/release/vxc dist/vxc-linux-x86_64
-          chmod +x dist/vxc-linux-x86_64
+          cp target/release/vxc dist/vxc-linux-x86_64-debug
+          chmod +x dist/vxc-linux-x86_64-debug
 
-          sha256sum dist/vxc-linux-x86_64 > dist/vxc-linux-x86_64.sha256
+          sha256sum dist/vxc-linux-x86_64-debug > dist/vxc-linux-x86_64-debug.sha256
 
-          echo "Artifacts:"
+          echo "Development artifacts:"
           ls -lh dist/
 
-      - name: Upload vxc binary
+      - name: Upload development binary
         uses: actions/upload-artifact@v4
         with:
-          name: vxc-linux-x86_64
+          name: vxc-linux-x86_64-debug
           path: |
-            dist/vxc-linux-x86_64
-            dist/vxc-linux-x86_64.sha256
+            dist/vxc-linux-x86_64-debug
+            dist/vxc-linux-x86_64-debug.sha256
           if-no-files-found: error
           retention-days: 14

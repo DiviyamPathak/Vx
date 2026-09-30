@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // Borrowing a value that is itself a reference gives a reference to a reference: `&(&a)`,
-// `&&a`, a borrow of a call that returns a reference, and `&&mut b`, written through. The
+// `&&a`, a borrow of a call that returns a reference, and `&mut &mut b`, written through. The
 // outer `&` used to be dropped, so `**q` read `a` as an address and crashed. A borrow of
 // an ordinary value, `&(a + 1)`, is checked alongside.
 //
@@ -27,7 +27,7 @@ fn main() -> i32 {
   print(**f);
   print!(" ");
   let mut b : i64 = 1i64;
-  let m : &&mut i64 = &&mut b;
+  let m : &mut &mut i64 = &mut &mut b;
   **m = 7i64;
   print(b);
   print!(" ");
